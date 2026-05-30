@@ -13,9 +13,9 @@ public class LimeLight {
     public SlidingAverage txAvg;
     public SlidingAverage tyAvg;
     public SlidingAverage distanceAvg;
-    public double txAvgVal;
-    public double tyAvgVal;
-    public double distanceAver;
+    public volatile double txAvgVal;
+    public volatile double tyAvgVal;
+    public volatile double distanceAver;
     public double cameraHeight = 16.0;
     public double apriltagHeight = 30.0;
     public double cameraAngle = 0.0;
@@ -33,7 +33,8 @@ public class LimeLight {
 
     }
 
-    public void loop() {
+    /** Polls Limelight and updates rolling averages (safe for background threads). */
+    public void updateVision() {
         LLResult result = limelight.getLatestResult();
 
         if (result != null && result.isValid()) {
@@ -43,15 +44,22 @@ public class LimeLight {
             txAvgVal = txAvg.update(tx);
             tyAvgVal = tyAvg.update(ty);
             distanceAver = distanceAvg.update(distance);
-            telemetry.addData("tx: ", txAvgVal);
-            telemetry.addData("ty:  ", tyAvgVal);
-            telemetry.addData("Distance: ", distanceAver);
         } else {
             tx = ty = distance = Double.NaN;
             txAvgVal = tyAvgVal = distanceAver = Double.NaN;
             txAvg.reset();
             tyAvg.reset();
             distanceAvg.reset();
+        }
+    }
+
+    public void loop() {
+        updateVision();
+        if (!Double.isNaN(txAvgVal)) {
+            telemetry.addData("tx: ", txAvgVal);
+            telemetry.addData("ty:  ", tyAvgVal);
+            telemetry.addData("Distance: ", distanceAver);
+        } else {
             telemetry.addLine("No Target Perceived");
         }
     }
