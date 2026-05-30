@@ -34,7 +34,18 @@ public class peepeepoopoo extends LinearOpMode {
 
     private static final double PAUSE_DURATION = 0.7;
     private static final double DELAY_SECONDS = 0.75;
-    private static final long VISION_LOOP_MS = 10;
+    private static final long VISION_LOOP_MS = 0;
+
+    /** Degrees — inside this band P correction fades out, but turn feedforward stays active. */
+    private static final double TURRET_TX_TOLERANCE = 1.0;
+    private static final double TURRET_KP = 0.055;
+    private static final double TURRET_KD = 0.012;
+    private static final double TURRET_MAX_POWER = 0.95;
+    private static final double TURRET_MIN_POWER = 0.20;
+    /** Compensate turret while the chassis rotates (gamepad1 right stick). */
+    private static final double TURN_FEEDFORWARD = -0.42;
+    /** Keep using the last valid tx briefly when Limelight drops frames while moving. */
+    private static final long TARGET_HOLD_MS = 200;
 
     public static double kP = 0.0005;
     public static double kI = 0.0;
@@ -88,6 +99,11 @@ public class peepeepoopoo extends LinearOpMode {
     private AxonServo axonServo;
 
     private Thread visionThread;
+
+    private double turretLastTx = Double.NaN;
+    private long turretLastTxNanos = 0;
+    private double turretPrevTx = Double.NaN;
+    private long turretPrevTxNanos = 0;
 
     @Override
     public void runOpMode() {
@@ -165,7 +181,9 @@ public class peepeepoopoo extends LinearOpMode {
             handleHoodPresets();
             handleFlywheelTrim();
 
-            telemetry.addData("tx", ll.txAvgVal);
+            telemetry.addData("tx", ll.tx);
+            telemetry.addData("txAvg", ll.txAvgVal);
+            telemetry.addData("turretFF", -gamepad1.right_stick_x * TURN_FEEDFORWARD);
             telemetry.addData("ty", ll.tyAvgVal);
             telemetry.addData("distanceFromGoal", lastDistanceInches);
             telemetry.addData("ballsShot", ballsShot);
@@ -206,7 +224,11 @@ public class peepeepoopoo extends LinearOpMode {
             }
 
             try {
-                Thread.sleep(VISION_LOOP_MS);
+                if (VISION_LOOP_MS > 0) {
+                    Thread.sleep(VISION_LOOP_MS);
+                } else {
+                    Thread.yield();
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -214,17 +236,64 @@ public class peepeepoopoo extends LinearOpMode {
         }
     }
 
-    /** Turret auto-align and manual fallback, runs on the vision thread. */
+    /** Turret auto-align with turn feedforward — runs on the vision thread. */
     private void updateTurretVision() {
-        double K = test_magnetic.isPressed() ? 20 : 3;
+        double chassisTurn = gamepad1.right_stick_x;
+        double feedforward = -chassisTurn * TURN_FEEDFORWARD;
 
-        if (ll.txAvgVal > 4.5) {
-            roto.setPower(-0.50 / K);
-        } else if (ll.txAvgVal < -4.5) {
-            roto.setPower(0.50 / K);
-        } else {
-            roto.setPower(gamepad2.left_stick_x / 5.0);
+        double tx = resolveTurretTx();
+        if (Double.isNaN(tx)) {
+            roto.setPower(clampTurretPower(feedforward + gamepad2.left_stick_x / 3.0));
+            return;
         }
+
+        long now = System.nanoTime();
+        double dTx = 0;
+        if (!Double.isNaN(turretPrevTx) && turretPrevTxNanos != 0) {
+            double dt = (now - turretPrevTxNanos) / 1e9;
+            if (dt > 0.001) {
+                dTx = (tx - turretPrevTx) / dt;
+            }
+        }
+        turretPrevTx = tx;
+        turretPrevTxNanos = now;
+
+        double error = tx;
+        double pTerm = 0;
+        if (Math.abs(error) > TURRET_TX_TOLERANCE) {
+            // Stronger correction for large offsets so it keeps up while driving.
+            double adaptiveKp = TURRET_KP * (1.0 + Math.abs(error) / 6.0);
+            pTerm = -error * adaptiveKp;
+        }
+
+        double dTerm = -TURRET_KD * dTx;
+        double power = pTerm + dTerm + feedforward;
+
+        if (Math.abs(error) > TURRET_TX_TOLERANCE && Math.abs(power) < TURRET_MIN_POWER) {
+            power = Math.signum(power != 0 ? power : -error) * TURRET_MIN_POWER;
+        }
+
+        roto.setPower(clampTurretPower(power));
+    }
+
+    /** Uses live tx, or the last good reading if Limelight briefly loses the target. */
+    private double resolveTurretTx() {
+        if (!Double.isNaN(ll.tx)) {
+            turretLastTx = ll.tx;
+            turretLastTxNanos = System.nanoTime();
+            return ll.tx;
+        }
+
+        if (!Double.isNaN(turretLastTx)
+                && (System.nanoTime() - turretLastTxNanos) / 1e6 < TARGET_HOLD_MS) {
+            return turretLastTx;
+        }
+
+        return Double.NaN;
+    }
+
+    private double clampTurretPower(double power) {
+        return Math.max(-TURRET_MAX_POWER, Math.min(TURRET_MAX_POWER, power));
     }
 
     /** Distance-based hood and flywheel tuning from Limelight ty, runs on the vision thread. */

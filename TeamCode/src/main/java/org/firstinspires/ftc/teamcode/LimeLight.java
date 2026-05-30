@@ -7,8 +7,8 @@ import org.firstinspires.ftc.robotcore.external.Telemetry;
 
 public class LimeLight {
     public Limelight3A limelight;
-    public double tx;
-    public double ty;
+    public volatile double tx;
+    public volatile double ty;
     public double distance;
     public SlidingAverage txAvg;
     public SlidingAverage tyAvg;
@@ -26,9 +26,9 @@ public class LimeLight {
         telemetry = tele;
         limelight.pipelineSwitch(0);
         limelight.start();
-        txAvg = new SlidingAverage(5);
-        tyAvg = new SlidingAverage(5);
-        distanceAvg = new SlidingAverage(5);
+        txAvg = new SlidingAverage(1);
+        tyAvg = new SlidingAverage(2);
+        distanceAvg = new SlidingAverage(3);
         telemetry.addLine("Limelight");
 
     }
@@ -47,9 +47,7 @@ public class LimeLight {
         } else {
             tx = ty = distance = Double.NaN;
             txAvgVal = tyAvgVal = distanceAver = Double.NaN;
-            txAvg.reset();
-            tyAvg.reset();
-            distanceAvg.reset();
+            // Do not reset averages — brief dropouts while moving should not wipe smoothing.
         }
     }
 
